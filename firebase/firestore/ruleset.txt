@@ -1,0 +1,73 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper function: load the requesting user's profile
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    function isApproved() {
+      return isAuthed() && userDoc().approved == true;
+    }
+
+    function isAdmin() {
+      return isAuthed() && userDoc().isAdmin == true;
+    }
+
+    // Users: allow user to read their own doc; admin can read all.
+    match /users/{uid} {
+      // Allow anyone to list users but only return displayName field
+      allow get: if (isApproved() && (request.resource.data.keys().hasOnly(['displayName']) || resource.data.keys().hasOnly(['displayName']))) ||
+        (request.auth == null && resource.data.keys().hasOnly(['displayName']));
+      // Allow listing users for displayName field only, for registration
+      allow list: if request.auth == null || isApproved();
+      // Allow user to read their own full doc, and admin to read all
+      allow read: if isAdmin() || (isAuthed() && uid == request.auth.uid);
+      // Only admin can write users; users may create their own doc at registration
+      allow create: if isAuthed() && uid == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // Games collection: approved users may read/write; writes limited to approving fields
+    match /games/{gameId} {
+      allow read: if isApproved();
+      allow create, update, delete: if isApproved();
+
+      // Votes subcollection: enforce one vote per user per game
+      match /votes/{voteId} {
+        allow read: if isApproved();
+        // Only allow voting if user is approved, is voting for self, and has marked the game as installed
+        function hasInstalled() {
+          return exists(/databases/$(database)/documents/games/$(gameId)/installedBy/$(request.auth.uid));
+        }
+        allow create: if isApproved() && voteId == request.auth.uid && hasInstalled();
+        allow update, delete: if isApproved() && voteId == request.auth.uid && hasInstalled();
+      }
+      // InstalledBy subcollection: only the user can write their own installedBy doc
+      match /installedBy/{userId} {
+        allow read: if isApproved();
+        allow create: if isApproved() && userId == request.auth.uid;
+        // Allow user to update/delete their own, and allow admin to delete any
+        allow update, delete: if (isApproved() && userId == request.auth.uid) || isAdmin();
+      }
+    }
+
+    // Party status: admin-only writes, approved users read
+    match /partyStatus/{docId} {
+      allow read: if isApproved();
+      allow write: if isAdmin();
+    }
+
+    // Timetable entries: admin-only writes, approved users read
+    match /timetable/{entryId} {
+      allow read: if isApproved();
+           allow write: if isAdmin();
+    }
+  }
+}
